@@ -10,7 +10,10 @@
 
 StudyMate is a modern, polished AI chat interface designed to help students with their studies. It features a clean, responsive UI with support for multiple AI providers (OpenAI, Anthropic, Gemini, Local) and a focus on user experience.
 
-![StudyMate Screenshot](opengraph.jpg)
+<p align="center">
+  <img src="/opengraph.png" alt="StudyMate Banner" width="100%" />
+</p>
+
 
 ## Features
 
