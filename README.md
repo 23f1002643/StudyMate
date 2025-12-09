@@ -1,8 +1,16 @@
+<!-- Badges -->
+<p align="center">
+	<a href="https://openai.com"><img src="https://img.shields.io/badge/OpenAI-API-blue?logo=openai" alt="OpenAI"></a>
+	<a href="https://www.netlify.com"><img src="https://img.shields.io/badge/Netlify-Deployed-brightgreen?logo=netlify" alt="Netlify"></a>
+	<img src="https://img.shields.io/badge/HTML5-E34F26?logo=html5&logoColor=white" alt="HTML5">
+	<img src="https://img.shields.io/github/license/23f1002643/StudyMate?color=blue" alt="License">
+	<img src="https://img.shields.io/github/stars/23f1002643/StudyMate?style=social" alt="GitHub stars">
+</p>
 # StudyMate - AI Study Assistant
 
 StudyMate is a modern, polished AI chat interface designed to help students with their studies. It features a clean, responsive UI with support for multiple AI providers (OpenAI, Anthropic, Gemini, Local) and a focus on user experience.
 
-![StudyMate Screenshot](./client/public/opengraph.jpg)
+![StudyMate Screenshot](opengraph.jpg)
 
 ## Features
 
@@ -26,8 +34,8 @@ StudyMate is a modern, polished AI chat interface designed to help students with
 
 1.  **Clone the repository**
     ```bash
-    git clone https://github.com/23f1002643/UI-Spark.git
-    cd UI-Spark
+    git clone https://github.com/23f1002643/StudyMate.git
+    cd StudyMate
     ```
 
 2.  **Install dependencies**
