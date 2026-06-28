@@ -13,6 +13,7 @@ const defaultSettings: Settings = {
   temperature: 0.7,
   streamResponses: true,
   language: 'English',
+  ollamaUrl: 'http://localhost:11434',
 };
 
 export const storage = {

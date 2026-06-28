@@ -9,19 +9,18 @@ const defaultSettings: Settings = {
   temperature: 0.7,
   streamResponses: true,
   language: 'English',
+  ollamaUrl: 'http://localhost:11434',
 };
 
 export function useSettings() {
-  const [settings, setSettings] = useState<Settings>(() => storage.getSettings());
+  const [settings, setSettings] = useState<Settings>(() => ({
+    ...defaultSettings,
+    ...storage.getSettings(),
+  }));
 
   const updateSettings = useCallback((updates: Partial<Settings>) => {
     setSettings(prev => {
       const next = { ...prev, ...updates };
-      // Auto-select first model when provider changes
-      if (updates.provider && updates.provider !== prev.provider) {
-        next.model = MODELS[updates.provider][0];
-        next.apiKey = '';
-      }
       storage.saveSettings(next);
       return next;
     });
