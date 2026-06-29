@@ -1,6 +1,6 @@
-import { Message, Settings, MCQQuestion, Flashcard } from '@/types/chat';
+import { Message, Settings } from '@/types/chat';
 
-// ─── Core LLM Call with streaming ────────────────────────────────────────────
+// ─── Core LLM Call ────────────────────────────────────────────────────────────
 
 export async function callLLM(
   messages: Message[],
@@ -11,7 +11,7 @@ export async function callLLM(
   const { provider, apiKey, model, temperature, streamResponses } = settings;
 
   if (!apiKey && provider !== 'local') {
-    throw new Error(`No API key set for ${provider}. Open Settings ⚙️ to add one.`);
+    throw new Error(`No API key set for ${provider}. Open ⚙️ Settings to add one.`);
   }
 
   const msgs = [
@@ -22,12 +22,13 @@ export async function callLLM(
     })),
   ];
 
-  if (provider === 'openai')    return callOpenAI(msgs, apiKey, model, temperature, streamResponses, onChunk);
-  if (provider === 'anthropic') return callAnthropic(msgs, apiKey, model, temperature, streamResponses, onChunk);
-  if (provider === 'gemini')    return callGemini(msgs, apiKey, model, temperature, onChunk);
-  if (provider === 'local')     return callOllama(msgs, model, temperature, streamResponses, onChunk, settings.ollamaUrl);
-
-  throw new Error('Unknown provider');
+  switch (provider) {
+    case 'openai':    return callOpenAI(msgs, apiKey, model, temperature, streamResponses, onChunk);
+    case 'anthropic': return callAnthropic(msgs, apiKey, model, temperature, streamResponses, onChunk);
+    case 'gemini':    return callGemini(msgs, apiKey, model, temperature, onChunk);
+    case 'local':     return callOllama(msgs, model, temperature, streamResponses, onChunk, settings.ollamaUrl);
+    default:          throw new Error('Unknown provider');
+  }
 }
 
 // ─── OpenAI ──────────────────────────────────────────────────────────────────
@@ -45,7 +46,11 @@ async function callOpenAI(
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err?.error?.message || `OpenAI error ${res.status}`);
+    const msg = err?.error?.message || `OpenAI error ${res.status}`;
+    if (res.status === 401) throw new Error('Invalid OpenAI API key. Check Settings ⚙️');
+    if (res.status === 429) throw new Error('OpenAI rate limit hit. Wait a moment and retry.');
+    if (res.status === 402) throw new Error('OpenAI billing issue. Check your plan at platform.openai.com');
+    throw new Error(msg);
   }
 
   if (stream && onChunk) {
@@ -99,6 +104,8 @@ async function callAnthropic(
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
+    if (res.status === 401) throw new Error('Invalid Anthropic API key. Check Settings ⚙️');
+    if (res.status === 429) throw new Error('Anthropic rate limit. Wait a moment and retry.');
     throw new Error(err?.error?.message || `Anthropic error ${res.status}`);
   }
 
@@ -129,7 +136,6 @@ async function callAnthropic(
 }
 
 // ─── Gemini ──────────────────────────────────────────────────────────────────
-// Uses v1beta which supports all current models including gemini-2.0-*
 
 async function callGemini(
   messages: { role: 'user' | 'assistant' | 'system'; content: string }[],
@@ -138,20 +144,17 @@ async function callGemini(
 ): Promise<{ content: string; tokens: number }> {
   const system = messages.find(m => m.role === 'system')?.content;
 
-  // Gemini requires alternating user/model turns — merge consecutive same-role messages
+  // Gemini requires strictly alternating user/model turns — merge consecutive same-role
   const rawMsgs = messages.filter(m => m.role !== 'system');
   const convMsgs: { role: string; parts: { text: string }[] }[] = [];
   for (const m of rawMsgs) {
     const role = m.role === 'assistant' ? 'model' : 'user';
     if (convMsgs.length > 0 && convMsgs[convMsgs.length - 1].role === role) {
-      // Merge with previous same-role message
       convMsgs[convMsgs.length - 1].parts[0].text += '\n' + m.content;
     } else {
       convMsgs.push({ role, parts: [{ text: m.content }] });
     }
   }
-
-  // Must start with user turn
   if (convMsgs.length === 0 || convMsgs[0].role !== 'user') {
     convMsgs.unshift({ role: 'user', parts: [{ text: '.' }] });
   }
@@ -162,7 +165,6 @@ async function callGemini(
   };
   if (system) body.systemInstruction = { parts: [{ text: system }] };
 
-  // Use streaming endpoint for gemini
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?key=${apiKey}&alt=sse`;
 
   const res = await fetch(endpoint, {
@@ -173,11 +175,25 @@ async function callGemini(
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    const msg = err?.error?.message || `Gemini error ${res.status}`;
+    const msg: string = err?.error?.message || `Gemini error ${res.status}`;
+
+    // Friendly quota/billing errors
+    if (msg.includes('free_tier') || msg.includes('Quota exceeded') || res.status === 429) {
+      throw new Error(
+        '🚫 Gemini free tier quota exhausted.\n\n' +
+        'Fix: Go to aistudio.google.com → Get API key → Enable billing in Google Cloud Console.\n' +
+        'Free tier allows 15 RPM for gemini-1.5-flash. Paid removes this limit.'
+      );
+    }
+    if (res.status === 400 && msg.includes('not found')) {
+      throw new Error(`Gemini model "${model}" not available. Try switching to gemini-1.5-flash in Settings ⚙️`);
+    }
+    if (res.status === 403) {
+      throw new Error('Gemini API key invalid or API not enabled. Check aistudio.google.com/apikey');
+    }
     throw new Error(msg);
   }
 
-  // Parse SSE stream
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let full = '';
@@ -186,16 +202,12 @@ async function callGemini(
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    const chunk = decoder.decode(value);
-    for (const line of chunk.split('\n')) {
+    for (const line of decoder.decode(value).split('\n')) {
       if (line.startsWith('data: ')) {
         try {
           const data = JSON.parse(line.slice(6));
           const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (text) {
-            full += text;
-            if (onChunk) onChunk(text);
-          }
+          if (text) { full += text; if (onChunk) onChunk(text); }
           totalTokens = data?.usageMetadata?.totalTokenCount || totalTokens;
         } catch {}
       }
@@ -205,7 +217,13 @@ async function callGemini(
   return { content: full, tokens: totalTokens || Math.ceil(full.length / 4) };
 }
 
-// ─── Local / Ollama ──────────────────────────────────────────────────────────
+// ─── Ollama (local) ───────────────────────────────────────────────────────────
+// On HTTPS deployments (Netlify), browser can't call HTTP localhost directly.
+// We detect and route through /api/ollama proxy (Netlify Function).
+
+function isHttpsContext(): boolean {
+  return typeof window !== 'undefined' && window.location.protocol === 'https:';
+}
 
 async function callOllama(
   messages: { role: 'user' | 'assistant' | 'system'; content: string }[],
@@ -214,17 +232,58 @@ async function callOllama(
   ollamaUrl = 'http://localhost:11434',
 ): Promise<{ content: string; tokens: number }> {
   const baseUrl = ollamaUrl.replace(/\/$/, '');
+  const useProxy = isHttpsContext();
 
-  // First check if Ollama is reachable
+  // ── Proxy path (HTTPS deployment → Netlify Function) ──────────────────────
+  if (useProxy) {
+    const res = await fetch('/api/ollama/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ollamaUrl: baseUrl,
+        endpoint: '/api/chat',
+        model,
+        messages,
+        stream: false, // Netlify Functions don't support streaming response easily
+        options: { temperature },
+      }),
+    });
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      const errMsg: string = data?.error || `Proxy error ${res.status}`;
+      if (errMsg.includes('Cannot reach') || errMsg.includes('ECONNREFUSED')) {
+        throw new Error(
+          `Cannot reach Ollama at ${baseUrl}.\n\n` +
+          `Since you're on the web app, Ollama must be running on the same machine as your browser with CORS enabled:\n\n` +
+          `OLLAMA_ORIGINS="*" ollama serve\n\n` +
+          `Note: This proxy only works in local dev (http://localhost:5000). On Netlify, Ollama must be publicly accessible.`
+        );
+      }
+      if (errMsg.includes('not found')) {
+        throw new Error(`Model "${model}" not pulled yet. Run: ollama pull ${model}`);
+      }
+      throw new Error(errMsg);
+    }
+
+    const data = await res.json();
+    const content = data.message?.content || '';
+    if (onChunk) onChunk(content);
+    return { content, tokens: data.eval_count || Math.ceil(content.length / 4) };
+  }
+
+  // ── Direct path (local dev http://localhost:5000) ─────────────────────────
   try {
-    await fetch(`${baseUrl}/api/tags`, { method: 'GET', signal: AbortSignal.timeout(3000) });
+    await fetch(`${baseUrl}/api/tags`, {
+      signal: AbortSignal.timeout(2000),
+    });
   } catch {
     throw new Error(
       `Cannot reach Ollama at ${baseUrl}.\n\n` +
-      `Make sure:\n` +
-      `1. Ollama is installed and running: ollama serve\n` +
-      `2. CORS is enabled: OLLAMA_ORIGINS="*" ollama serve\n` +
-      `3. URL is correct in Settings (default: http://localhost:11434)`
+      `Start Ollama with CORS enabled:\n` +
+      `  OLLAMA_ORIGINS="*" ollama serve\n\n` +
+      `Then pull a model:\n` +
+      `  ollama pull llama3.2`
     );
   }
 
@@ -236,10 +295,10 @@ async function callOllama(
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    if (text.includes('model') && text.includes('not found')) {
-      throw new Error(`Model "${model}" not found in Ollama. Run: ollama pull ${model}`);
+    if (text.includes('not found')) {
+      throw new Error(`Model "${model}" not found. Run: ollama pull ${model}`);
     }
-    throw new Error(`Ollama error ${res.status}: ${text}`);
+    throw new Error(`Ollama error ${res.status}`);
   }
 
   if (stream && onChunk) {
@@ -264,7 +323,7 @@ async function callOllama(
   return { content: data.message?.content || '', tokens: data.eval_count || 0 };
 }
 
-// ─── Specialized Study Prompts ────────────────────────────────────────────────
+// ─── Study Prompts ────────────────────────────────────────────────────────────
 
 export const SYSTEM_PROMPTS = {
   study: (lang: string) => `You are StudyMate, an expert academic tutor.
@@ -282,8 +341,7 @@ Give specific, actionable suggestions. Respond in ${lang}.`,
   code: (lang: string) => `You are StudyMate, an expert coding mentor.
 Explain code concepts clearly with working examples.
 Always use markdown code blocks with language specified.
-Explain the "why" behind code, not just the "how".
-Respond in ${lang}.`,
+Explain the "why" behind code, not just the "how". Respond in ${lang}.`,
 
   language: (lang: string) => `You are StudyMate, a language learning expert.
 Help students learn new languages with vocabulary, grammar, and practice.
@@ -295,71 +353,35 @@ Be helpful, accurate, and educational. Use markdown for formatting.
 Respond in ${lang}.`,
 
   mcqGenerator: (topic: string, count: number) => `Generate ${count} multiple choice questions about: "${topic}"
-
-Return ONLY valid JSON in this exact format, no markdown, no explanation:
-{
-  "questions": [
-    {
-      "question": "Question text here?",
-      "options": ["Option A", "Option B", "Option C", "Option D"],
-      "correct": 0,
-      "explanation": "Why this answer is correct"
-    }
-  ]
-}
-
-Rules:
-- correct is the index (0-3) of the right answer
-- All options should be plausible but only one correct
-- Explanations should be educational
-- Vary difficulty across questions`,
+Return ONLY valid JSON, no markdown, no preamble:
+{"questions":[{"question":"...","options":["A","B","C","D"],"correct":0,"explanation":"..."}]}
+Rules: correct = index 0-3, all options plausible, vary difficulty.`,
 
   flashcardGenerator: (text: string) => `Create flashcards from this content:
-
 "${text.slice(0, 3000)}"
+Return ONLY valid JSON:
+{"cards":[{"front":"term/question","back":"answer","difficulty":"easy"}]}
+difficulty must be exactly "easy","medium","hard". Extract 5-15 key concepts.`,
 
-Return ONLY valid JSON, no markdown, no explanation:
-{
-  "cards": [
-    {
-      "front": "Question or term",
-      "back": "Answer or definition",
-      "difficulty": "easy"
-    }
-  ]
-}
-
-Rules:
-- difficulty must be exactly "easy", "medium", or "hard"
-- front: clear question or key term
-- back: concise, accurate answer
-- Extract 5-15 most important concepts`,
-
-  studyAgent: (topic: string, lang: string) => `You are a Study Agent helping a student master: "${topic}"
-
-Structured approach:
-1. First assess what they know (ask 2-3 targeted questions)
-2. Create a personalized study plan based on their response
-3. Teach concepts one at a time, from their level
-4. After each concept, ask a comprehension check
-5. Track weak areas and revisit them
-6. End with a mini quiz
-
-Use the Socratic method. Use markdown and LaTeX where appropriate.
-Respond in ${lang}.`,
+  studyAgent: (topic: string, lang: string) => `You are a Study Agent helping master: "${topic}"
+1. Assess knowledge (2-3 questions)
+2. Create personalized study plan
+3. Teach concepts one at a time using Socratic method
+4. Comprehension check after each concept
+5. Mini quiz at the end
+Use markdown and LaTeX. Respond in ${lang}.`,
 };
 
 // ─── RAG Utilities ────────────────────────────────────────────────────────────
 
 export function buildRAGContext(query: string, chunks: string[]): string {
   if (!chunks.length) return '';
-  const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length > 2);
-  const scored = chunks.map(chunk => ({
-    chunk,
-    score: queryWords.reduce((acc, word) =>
-      acc + (chunk.toLowerCase().includes(word) ? 1 : 0), 0),
-  }));
-  const top = scored.sort((a, b) => b.score - a.score).slice(0, 3).filter(c => c.score > 0);
+  const qWords = query.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+  const top = chunks
+    .map(chunk => ({ chunk, score: qWords.reduce((a, w) => a + (chunk.toLowerCase().includes(w) ? 1 : 0), 0) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3)
+    .filter(c => c.score > 0);
   if (!top.length) return '';
   return `\n\n---\nRelevant context from your notes:\n${top.map(c => c.chunk).join('\n\n')}\n---\n`;
 }
@@ -388,7 +410,7 @@ export async function extractTextFromFile(file: File): Promise<string> {
       reader.onerror = () => reject(new Error('Failed to read file'));
       reader.readAsText(file);
     } else {
-      reject(new Error('Only .txt and .md files are supported for context upload.'));
+      reject(new Error('Only .txt and .md files supported for context upload.'));
     }
   });
 }
